@@ -1,0 +1,12 @@
+{
+  "domain": "rf_generic",
+  "name": "RF Generic",
+  "codeowners": ["@MatMaul"],
+  "dependencies": ["radio_frequency"],
+  "documentation": "https://www.home-assistant.io/integrations/rf_generic",
+  "integration_type": "hub",
+  "iot_class": "assumed_state",
+  "quality_scale": "legacy",
+  "version": "v0.1.0",
+  "requirements": ["rf-protocols==4.3.0"]
+}
