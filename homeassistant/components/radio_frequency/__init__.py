@@ -6,27 +6,44 @@ import logging
 from rf_protocols import ModulationType, RadioFrequencyCommand
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import Context, HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.typing import ConfigType
 
 from . import websocket_api
 from .const import DATA_COMPONENT, DOMAIN
-from .entity import (
+from .entity import (  # noqa: F401
+    ModulationType,
+    RadioFrequencyReceivedSignal,
+    RadioFrequencyReceiverEntity,
+    RadioFrequencyReceiverEntityDescription,
     RadioFrequencyTransmitterEntity,
     RadioFrequencyTransmitterEntityDescription,
+)
+from .helpers import (
+    RadioFrequencyReceiverConsumerEntity,
+    RadioFrequencyTransmitterConsumerEntity,
+    async_send_command,
+    async_subscribe_receiver,
 )
 
 __all__ = [
     "DATA_COMPONENT",
     "DOMAIN",
     "ModulationType",
+    "RadioFrequencyReceivedSignal",
+    "RadioFrequencyReceiverConsumerEntity",
+    "RadioFrequencyReceiverEntity",
+    "RadioFrequencyReceiverEntityDescription",
+    "RadioFrequencyTransmitterConsumerEntity",
     "RadioFrequencyTransmitterEntity",
     "RadioFrequencyTransmitterEntityDescription",
+    "async_get_receivers",
     "async_get_transmitters",
     "async_send_command",
+    "async_subscribe_receiver",
 ]
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +57,7 @@ SCAN_INTERVAL = timedelta(seconds=30)
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the radio_frequency domain."""
     component = hass.data[DATA_COMPONENT] = EntityComponent[
-        RadioFrequencyTransmitterEntity
+        RadioFrequencyTransmitterEntity | RadioFrequencyReceiverEntity
     ](_LOGGER, DOMAIN, hass, SCAN_INTERVAL)
     await component.async_setup(config)
 
@@ -82,7 +99,11 @@ def async_get_transmitters(
             translation_key="component_not_loaded",
         )
 
-    entities = list(component.entities)
+    entities = [
+        entity
+        for entity in component.entities
+        if isinstance(entity, RadioFrequencyTransmitterEntity)
+    ]
     if not entities:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
@@ -97,58 +118,15 @@ def async_get_transmitters(
     ]
 
 
-async def async_send_command(
-    hass: HomeAssistant,
-    entity_id_or_uuid: str,
-    command: RadioFrequencyCommand,
-    context: Context | None = None,
-) -> None:
-    """Send an RF command to the specified radio_frequency entity.
-
-    Raises:
-        vol.Invalid: If `entity_id_or_uuid` is not a valid entity ID or known entity
-            registry UUID.
-        HomeAssistantError: If the radio_frequency component is not loaded or the
-            resolved entity is not found.
-    """
+@callback
+def async_get_receivers(hass: HomeAssistant) -> list[str]:
+    """Get all radio frequency receiver entity IDs."""
     component = hass.data.get(DATA_COMPONENT)
     if component is None:
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="component_not_loaded",
-        )
+        return []
 
-    ent_reg = er.async_get(hass)
-    entity_id = er.async_validate_entity_id(ent_reg, entity_id_or_uuid)
-    entity = component.get_entity(entity_id)
-    if entity is None:
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="entity_not_found",
-            translation_placeholders={"entity_id": entity_id},
-        )
-
-    if not entity.supports_frequency(command.frequency):
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="unsupported_frequency",
-            translation_placeholders={
-                "entity_id": entity_id,
-                "frequency": str(command.frequency),
-            },
-        )
-
-    if not entity.supports_modulation(command.modulation):
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="unsupported_modulation",
-            translation_placeholders={
-                "entity_id": entity_id,
-                "modulation": command.modulation,
-            },
-        )
-
-    if context is not None:
-        entity.async_set_context(context)
-
-    await entity.async_send_command_internal(command)
+    return [
+        entity.entity_id
+        for entity in component.entities
+        if isinstance(entity, RadioFrequencyReceiverEntity)
+    ]

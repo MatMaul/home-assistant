@@ -1,15 +1,30 @@
 """Base entity for the radio frequency integration."""
 
 from abc import abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass
+import logging
 from typing import final, override
 
+from propcache.api import cached_property
 from rf_protocols import ModulationType, RadioFrequencyCommand
 
-from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import callback
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class RadioFrequencyReceivedSignal:
+    """Represents a received RF signal."""
+
+    timings: list[int]
+    frequency: int | None = None
+    modulation: ModulationType | None = None
 
 
 class RadioFrequencyTransmitterEntityDescription(
@@ -82,3 +97,79 @@ class RadioFrequencyTransmitterEntity(RestoreEntity):
         Raises:
             HomeAssistantError: If transmission fails.
         """
+
+
+class RadioFrequencyReceiverEntityDescription(EntityDescription, frozen_or_thawed=True):
+    """Describes radio frequency receiver entities."""
+
+
+class RadioFrequencyReceiverEntity(RestoreEntity):
+    """Base class for radio frequency receiver entities."""
+
+    entity_description: RadioFrequencyReceiverEntityDescription
+    _attr_should_poll = False
+    _attr_state: None = None
+
+    __last_signal_received: str | None = None
+
+    @cached_property
+    def __signal_callbacks(
+        self,
+    ) -> set[Callable[[RadioFrequencyReceivedSignal], None]]:
+        """Subscriber callback set, lazily initialized on first access."""
+        return set()
+
+    @property
+    @final
+    @override
+    def state(self) -> str | None:
+        """Return the entity state."""
+        return self.__last_signal_received
+
+    @final
+    @override
+    async def async_internal_added_to_hass(self) -> None:
+        """Call when the radio frequency entity is added to hass."""
+        await super().async_internal_added_to_hass()
+        state = await self.async_get_last_state()
+        if state is not None and state.state not in (
+            STATE_UNAVAILABLE,
+            STATE_UNKNOWN,
+            None,
+        ):
+            self.__last_signal_received = state.state
+
+    @final
+    def _handle_received_signal(self, signal: RadioFrequencyReceivedSignal) -> None:
+        """Handle a received RF signal.
+
+        Should not be overridden. To be called by platform implementations when a
+        signal is received.
+        """
+        self.__last_signal_received = dt_util.utcnow().isoformat(
+            timespec="milliseconds"
+        )
+        self.async_write_ha_state()
+        for signal_callback in tuple(self.__signal_callbacks):
+            try:
+                signal_callback(signal)
+            except Exception:
+                _LOGGER.exception("Error in signal callback for %s", self.entity_id)
+
+    @callback
+    def async_subscribe_received_signal(
+        self,
+        signal_callback: Callable[[RadioFrequencyReceivedSignal], None],
+    ) -> CALLBACK_TYPE:
+        """Subscribe to received RF signals.
+
+        Returns a callable to unsubscribe.
+        """
+        callbacks = self.__signal_callbacks
+        callbacks.add(signal_callback)
+
+        @callback
+        def remove_callback() -> None:
+            callbacks.discard(signal_callback)
+
+        return remove_callback
